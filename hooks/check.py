@@ -3,8 +3,9 @@
 # ///
 """slopguard —— Claude Code 的 Stop hook。
 
-Claude 每说完一整轮,扫一遍它说的中文;命中 AI 腔词库就返回
-{"decision": "block"},让 Claude 用人话重说这一轮。
+Claude 每说完一整轮,扫一遍它这一轮的回复;命中 AI 腔词库就以
+exit code 2 退出,把提示词写进 stderr —— CC 会拦住这次停止、并把
+stderr 回注给 Claude,逼它用人话重说。
 """
 
 from __future__ import annotations
@@ -103,67 +104,6 @@ def find_matches(text: str, patterns: list[str]) -> list[str]:
     return list(found)
 
 
-def _message_content(entry: dict):
-    return entry.get("message", {}).get("content")
-
-
-def is_real_user_message(entry: dict) -> bool:
-    """真人输入返回 True;工具结果回填(tool_result)返回 False。"""
-    content = _message_content(entry)
-    if isinstance(content, str):
-        return True
-    if isinstance(content, list):
-        return any(isinstance(b, dict) and b.get("type") == "text" for b in content)
-    return False
-
-
-def assistant_text(entry: dict) -> str:
-    """取一条 assistant 记录里的纯文本(忽略 tool_use 等块)。"""
-    content = _message_content(entry)
-    if isinstance(content, str):
-        return content
-    if isinstance(content, list):
-        parts = [
-            b.get("text", "")
-            for b in content
-            if isinstance(b, dict) and b.get("type") == "text"
-        ]
-        return "\n".join(p for p in parts if p)
-    return ""
-
-
-def extract_last_turn_text(transcript_path: str) -> str:
-    """取最近一轮里 Claude 说的全部散文:从末尾回溯,直到上一条真人输入。"""
-    try:
-        raw = Path(transcript_path).read_text(encoding="utf-8")
-    except (OSError, TypeError):
-        return ""
-
-    entries = []
-    for line in raw.splitlines():
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            entries.append(json.loads(line))
-        except json.JSONDecodeError:
-            continue
-
-    chunks = []
-    for entry in reversed(entries):
-        if not isinstance(entry, dict) or entry.get("isSidechain"):
-            continue
-        etype = entry.get("type")
-        if etype == "assistant":
-            text = assistant_text(entry)
-            if text:
-                chunks.append(text)
-        elif etype == "user" and is_real_user_message(entry):
-            break
-    chunks.reverse()
-    return "\n".join(chunks)
-
-
 def build_reason(templates: list[str], words: list[str]) -> str:
     """随机挑一条模板,把 {words} 换成命中的词。"""
     joined = "、".join(words)
@@ -182,11 +122,9 @@ def main() -> int:
     if payload.get("stop_hook_active"):
         return 0
 
-    transcript_path = payload.get("transcript_path")
-    if not transcript_path:
-        return 0
-
-    text = extract_last_turn_text(transcript_path)
+    # CC 在 Stop hook 的 stdin 里直接给了本轮最后一条助手消息。
+    # 不去解析 transcript —— Stop 触发时那条消息可能还没落盘到文件。
+    text = payload.get("last_assistant_message") or ""
     if not text:
         return 0
 
@@ -195,13 +133,12 @@ def main() -> int:
     if not matches:
         return 0
 
-    output = {
-        "decision": "block",
-        "reason": build_reason(load_templates(), matches),
-        "systemMessage": "🛡 slopguard 命中 AI 腔:" + "、".join(matches),
-    }
-    print(json.dumps(output, ensure_ascii=False))
-    return 0
+    # Stop hook 靠 exit code 2 阻断:stderr 的内容会回注给 Claude,
+    # 逼它继续这一轮并用人话重说。
+    banner = "🛡 slopguard 命中 AI 腔:" + "、".join(matches)
+    reason = build_reason(load_templates(), matches)
+    print(f"{banner}\n{reason}", file=sys.stderr)
+    return 2
 
 
 if __name__ == "__main__":

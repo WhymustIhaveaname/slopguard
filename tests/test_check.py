@@ -11,10 +11,6 @@ check = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(check)
 
 
-def _line(obj):
-    return json.dumps(obj, ensure_ascii=False)
-
-
 # ---- parse_lines ----
 
 def test_parse_lines_skips_comments_and_blanks():
@@ -59,51 +55,6 @@ def test_find_matches_no_hit():
     assert check.find_matches("一句正常的人话", ["等你拍"]) == []
 
 
-# ---- extract_last_turn_text ----
-
-def test_extract_last_turn_text(tmp_path):
-    lines = [
-        _line({"type": "user", "message": {"role": "user", "content": "老问题"}}),
-        _line({"type": "assistant", "message": {"role": "assistant",
-               "content": [{"type": "text", "text": "老回答"}]}}),
-        _line({"type": "user", "message": {"role": "user", "content": "帮我做个东西"}}),
-        _line({"type": "assistant", "message": {"role": "assistant",
-               "content": [{"type": "text", "text": "好,我先看一下"},
-                           {"type": "tool_use", "id": "t1", "name": "Bash", "input": {}}]}}),
-        _line({"type": "user", "message": {"role": "user",
-               "content": [{"type": "tool_result", "tool_use_id": "t1", "content": "ok"}]}}),
-        _line({"type": "assistant", "message": {"role": "assistant",
-               "content": [{"type": "text", "text": "这个方案稳稳托住了需求"}]}}),
-    ]
-    tp = tmp_path / "transcript.jsonl"
-    tp.write_text("\n".join(lines), encoding="utf-8")
-
-    text = check.extract_last_turn_text(str(tp))
-    assert "好,我先看一下" in text      # 工具调用前说的也算本轮
-    assert "稳稳托住" in text            # 工具结果之后说的也算本轮
-    assert "老回答" not in text          # 上一轮的不算
-
-
-def test_extract_skips_sidechain(tmp_path):
-    lines = [
-        _line({"type": "user", "message": {"role": "user", "content": "做事"}}),
-        _line({"type": "assistant", "isSidechain": True, "message": {"role": "assistant",
-               "content": [{"type": "text", "text": "子 agent 说的等你拍"}]}}),
-        _line({"type": "assistant", "message": {"role": "assistant",
-               "content": [{"type": "text", "text": "主 agent 的正经回答"}]}}),
-    ]
-    tp = tmp_path / "t.jsonl"
-    tp.write_text("\n".join(lines), encoding="utf-8")
-
-    text = check.extract_last_turn_text(str(tp))
-    assert "主 agent 的正经回答" in text
-    assert "子 agent" not in text
-
-
-def test_extract_missing_file():
-    assert check.extract_last_turn_text("/no/such/file.jsonl") == ""
-
-
 # ---- build_reason ----
 
 def test_build_reason_fills_placeholder():
@@ -118,78 +69,59 @@ def test_build_reason_empty_templates_has_fallback():
 
 def _run_main(monkeypatch, payload):
     monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps(payload)))
-    captured = io.StringIO()
-    monkeypatch.setattr("sys.stdout", captured)
+    out, err = io.StringIO(), io.StringIO()
+    monkeypatch.setattr("sys.stdout", out)
+    monkeypatch.setattr("sys.stderr", err)
     code = check.main()
-    return code, captured.getvalue()
+    return code, out.getvalue(), err.getvalue()
 
 
 def test_main_blocks_on_slop(tmp_path, monkeypatch):
     monkeypatch.setenv("SLOPGUARD_USER_DIR", str(tmp_path / "userconf"))
-    transcript = tmp_path / "tr.jsonl"
-    transcript.write_text("\n".join([
-        _line({"type": "user", "message": {"role": "user", "content": "写点东西"}}),
-        _line({"type": "assistant", "message": {"role": "assistant",
-               "content": [{"type": "text", "text": "这个设计稳稳托住了全场"}]}}),
-    ]), encoding="utf-8")
-
-    code, out = _run_main(monkeypatch, {
-        "transcript_path": str(transcript),
+    code, out, err = _run_main(monkeypatch, {
+        "last_assistant_message": "这个设计稳稳托住了全场",
         "stop_hook_active": False,
     })
-    assert code == 0
-    result = json.loads(out)
-    assert result["decision"] == "block"
-    assert "稳稳托住" in result["systemMessage"]
-    assert result["reason"]
+    # exit code 2 = 阻断;命中词与提示词都写在 stderr,回注给 Claude
+    assert code == 2
+    assert "稳稳托住" in err
+    assert "🛡" in err
 
 
 def test_main_passes_clean_text(tmp_path, monkeypatch):
     monkeypatch.setenv("SLOPGUARD_USER_DIR", str(tmp_path / "userconf"))
-    transcript = tmp_path / "tr.jsonl"
-    transcript.write_text("\n".join([
-        _line({"type": "user", "message": {"role": "user", "content": "写点东西"}}),
-        _line({"type": "assistant", "message": {"role": "assistant",
-               "content": [{"type": "text", "text": "这段话写得很正常,没有毛病。"}]}}),
-    ]), encoding="utf-8")
-
-    code, out = _run_main(monkeypatch, {
-        "transcript_path": str(transcript),
+    code, out, err = _run_main(monkeypatch, {
+        "last_assistant_message": "这段话写得很正常,没有毛病。",
         "stop_hook_active": False,
     })
     assert code == 0
-    assert out.strip() == ""
+    assert err.strip() == ""
 
 
 def test_main_stop_hook_active_passes(tmp_path, monkeypatch):
     # 已在重试中:就算有 slop 也直接放行,避免死循环
     monkeypatch.setenv("SLOPGUARD_USER_DIR", str(tmp_path / "userconf"))
-    transcript = tmp_path / "tr.jsonl"
-    transcript.write_text("\n".join([
-        _line({"type": "user", "message": {"role": "user", "content": "写点东西"}}),
-        _line({"type": "assistant", "message": {"role": "assistant",
-               "content": [{"type": "text", "text": "稳稳托住"}]}}),
-    ]), encoding="utf-8")
-
-    code, out = _run_main(monkeypatch, {
-        "transcript_path": str(transcript),
+    code, out, err = _run_main(monkeypatch, {
+        "last_assistant_message": "稳稳托住",
         "stop_hook_active": True,
     })
     assert code == 0
-    assert out.strip() == ""
+    assert err.strip() == ""
+
+
+def test_main_no_message_passes(tmp_path, monkeypatch):
+    # stdin 里没有 last_assistant_message(比如本轮只调了工具),放行
+    monkeypatch.setenv("SLOPGUARD_USER_DIR", str(tmp_path / "userconf"))
+    code, out, err = _run_main(monkeypatch, {"stop_hook_active": False})
+    assert code == 0
 
 
 def test_main_creates_user_files(tmp_path, monkeypatch):
     udir = tmp_path / "userconf"
     monkeypatch.setenv("SLOPGUARD_USER_DIR", str(udir))
-    transcript = tmp_path / "tr.jsonl"
-    transcript.write_text("\n".join([
-        _line({"type": "user", "message": {"role": "user", "content": "hi"}}),
-        _line({"type": "assistant", "message": {"role": "assistant",
-               "content": [{"type": "text", "text": "正常的回答"}]}}),
-    ]), encoding="utf-8")
-
-    _run_main(monkeypatch, {"transcript_path": str(transcript),
-                            "stop_hook_active": False})
+    _run_main(monkeypatch, {
+        "last_assistant_message": "正常的回答",
+        "stop_hook_active": False,
+    })
     assert (udir / "patterns.txt").exists()
     assert (udir / "templates.txt").exists()
