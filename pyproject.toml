@@ -1,6 +1,6 @@
 [project]
 name = "slopguard"
-version = "0.2.0"
+version = "0.3.0"
 description = "检测 Claude Code 输出里的 AI 腔中文,命中后打回重说的 Claude Code 插件"
 requires-python = ">=3.9"
 dependencies = []

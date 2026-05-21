@@ -3,9 +3,10 @@
 # ///
 """slopguard —— Claude Code 的 Stop hook。
 
-Claude 每说完一整轮,扫一遍它这一轮的回复;命中 AI 腔词库就以
-exit code 2 退出,把提示词写进 stderr —— CC 会拦住这次停止、并把
-stderr 回注给 Claude,逼它用人话重说。
+Claude 每说完一整轮,扫一遍它这一轮的回复;命中 AI 腔词库就返回
+{"decision": "block"} —— CC 会拦住这次停止:把 reason 回注给 Claude
+逼它用人话重说,把 systemMessage 显示给用户(systemMessage 不进
+Claude 的 context)。
 """
 
 from __future__ import annotations
@@ -133,12 +134,17 @@ def main() -> int:
     if not matches:
         return 0
 
-    # Stop hook 靠 exit code 2 阻断:stderr 的内容会回注给 Claude,
-    # 逼它继续这一轮并用人话重说。
-    banner = "🛡 slopguard 命中 AI 腔:" + "、".join(matches)
-    reason = build_reason(load_templates(), matches)
-    print(f"{banner}\n{reason}", file=sys.stderr)
-    return 2
+    # 命中:用 JSON 阻断这次停止。
+    # - reason: 回注给 Claude 的提示词,只放"打回"那一句,让进 context 的
+    #   东西尽量少;
+    # - systemMessage: 只给用户看的命中横幅,不进 Claude 的 context。
+    output = {
+        "decision": "block",
+        "reason": build_reason(load_templates(), matches),
+        "systemMessage": "🛡 slopguard 命中 AI 腔:" + "、".join(matches),
+    }
+    print(json.dumps(output, ensure_ascii=False))
+    return 0
 
 
 if __name__ == "__main__":
