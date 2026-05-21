@@ -4,9 +4,10 @@
 """slopguard —— Claude Code 的 Stop hook。
 
 Claude 每说完一整轮,扫一遍它这一轮的回复;命中 AI 腔词库就返回
-{"decision": "block"} —— CC 会拦住这次停止:把 reason 回注给 Claude
-逼它用人话重说,把 systemMessage 显示给用户(systemMessage 不进
-Claude 的 context)。
+{"decision": "block"} —— CC 会拦住这次停止:reason 作为一条
+"Stop hook feedback" 进 Claude 的 context(只此一条、不带命令前缀,
+已用随机串实测确认)逼它用人话重说;systemMessage 只显示给用户,
+不进 Claude 的 context。
 """
 
 from __future__ import annotations
@@ -134,9 +135,12 @@ def main() -> int:
     if not matches:
         return 0
 
+    # 命中:用 exit code 2 阻断这次停止。stderr 的内容会被 CC 回注给
+    # Claude(也显示给用户),逼它用人话重说。只放"打回"那一句,让进
+    # context 的东西尽量少。
     # 命中:用 JSON 阻断这次停止。
-    # - reason: 回注给 Claude 的提示词,只放"打回"那一句,让进 context 的
-    #   东西尽量少;
+    # - reason: 回注给 Claude 的提示词。作为一条 "Stop hook feedback"
+    #   消息进 context,只此一条、不带命令前缀。
     # - systemMessage: 只给用户看的命中横幅,不进 Claude 的 context。
     output = {
         "decision": "block",

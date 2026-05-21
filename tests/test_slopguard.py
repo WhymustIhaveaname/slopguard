@@ -86,9 +86,9 @@ def test_main_blocks_on_slop(tmp_path, monkeypatch):
     assert code == 0
     result = json.loads(out)
     assert result["decision"] == "block"
-    # reason 是回注给 Claude 的提示词
-    assert result["reason"]
-    # systemMessage 是给用户看的命中横幅,带上命中词
+    # reason 是回注给 Claude 的提示词(模板带 {words},含命中词)
+    assert "稳稳托住" in result["reason"]
+    # systemMessage 是只给用户看的命中横幅
     assert "稳稳托住" in result["systemMessage"]
 
 

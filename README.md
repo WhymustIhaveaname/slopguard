@@ -1,25 +1,43 @@
 # slopguard
 
-一个 Claude Code 插件:Claude 每说完一整轮,自动扫一遍它说的中文,发现「AI 腔」措辞就当场打回,塞一句提示词让它用人话重说。
+一个 Claude Code 插件: Claude 每次回复完, 自动匹配 AI 特有词, 发现就当场打回, 塞一句提示词让它用人话重说。
 
-## 它怎么工作
+## 原理
 
-挂在 Claude Code 的 `Stop` hook 上——Claude 把一整轮回答全部说完、即将把控制权交还给你的那一刻触发:
+挂在 Claude Code 的 `Stop` hook 上(一轮回答完毕、即将把控制权交还那一刻):
 
-1. 读出这一轮 Claude 说的全部中文散文(从末尾回溯到上一条真人输入);
+1. 取出最后一条消息;
 2. 用词库(正则)逐条扫描;
-3. 没命中 → 放行;
-4. 命中 → 返回 `{"decision":"block"}`,Claude 当场用人话重说这一轮,终端同时显示命中了哪些词。
-
-**时效性**:Claude Code 没有「生成到一半」的 hook,`Stop` 是能拿到模型散文输出的最早时机。所以做不到逐句拦——你会先瞄到那句 AI 腔,约 1~2 秒后看到重说版。
-
-**每轮最多打回一次**:重说后若仍不达标也放行,不无限纠缠(靠 `stop_hook_active` 防死循环)。
+3. 没命中 --> 放行;
+4. 命中 --> 从 `default-templates.txt` 中随机抽一句话让它用人话重说.
 
 ## 安装
 
-把本仓库作为插件加入 Claude Code(marketplace 或本地路径),插件会自动注册 `Stop` hook。
+### 从 GitHub 安装
 
-依赖:`uv`。hook 脚本用 `uv run` 跑,纯标准库,无第三方依赖。
+在任意 Claude Code 会话里:
+
+```
+/plugin marketplace add WhymustIhaveaname/slopguard
+/plugin install slopguard@slopguard
+```
+
+### 从本地目录安装
+
+把本地仓库目录注册成 marketplace,再安装:
+
+```
+/plugin marketplace add /路径/到/slopguard
+/plugin install slopguard@slopguard
+```
+
+指向的是本地目录,改完代码 `/plugin marketplace update slopguard` 即生效,但别移动该目录。
+
+### 临时挂载
+
+```
+claude --plugin-dir /路径/到/slopguard
+```
 
 ## 自定义
 
@@ -28,18 +46,4 @@
 - `~/.claude/slopguard/patterns.txt` —— 你的 AI 腔正则,一行一条
 - `~/.claude/slopguard/templates.txt` —— 你的回注模板,一行一条
 
-这两个文件首次运行时自动创建(带说明注释)。运行时默认层 + 用户层合并使用,你只增不改默认层。
-
-### 词库写法
-
-一行一条 Python 正则,`#` 开头是注释。注意写精确,避免误伤正经中文。例:`站得住(?!脚)` 命中单用的「站得住」,但放过正经的「站得住脚」。
-
-### 模板写法
-
-一行一条,`{words}` 会被替换成本轮命中的词。命中时随机挑一条。
-
-## 开发
-
-```bash
-uv run pytest
-```
+这两个文件首次运行时自动创建, 运行时合并使用。
