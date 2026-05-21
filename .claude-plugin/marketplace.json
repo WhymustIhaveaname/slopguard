@@ -1,0 +1,13 @@
+{
+  "name": "slopguard",
+  "owner": {
+    "name": "Youran"
+  },
+  "plugins": [
+    {
+      "name": "slopguard",
+      "source": "./",
+      "description": "检测 Claude Code 输出里的 AI 腔中文措辞,命中后自动打回让它用人话重说"
+    }
+  ]
+}
