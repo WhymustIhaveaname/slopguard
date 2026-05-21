@@ -2,6 +2,8 @@
 
 一个 Claude Code 插件: Claude 每次回复完, 自动匹配 AI 特有词, 发现就当场打回, 塞一句提示词让它用人话重说。
 
+![slopguard 抓到 AI 腔,当场打回重说](demo.png)
+
 ## 原理
 
 挂在 Claude Code 的 `Stop` hook 上(一轮回答完毕、即将把控制权交还那一刻):
