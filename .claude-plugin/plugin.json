@@ -1,7 +1,7 @@
 {
   "name": "slopguard",
   "description": "检测 Claude Code 输出里的 AI 腔中文措辞,命中后自动打回让它用人话重说",
-  "version": "0.3.1",
+  "version": "0.3.2",
   "author": {
     "name": "Youran"
   }
