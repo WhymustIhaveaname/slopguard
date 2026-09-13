@@ -1,4 +1,4 @@
-"""slopguard.py 的单元测试。"""
+"""slopguard.py 的单元测试."""
 
 import importlib.util
 import io
@@ -11,11 +11,23 @@ slopguard = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(slopguard)
 
 
-# ---- parse_lines ----
+# ---- yaml helpers ----
 
-def test_parse_lines_skips_comments_and_blanks():
-    text = "# 注释\n\n等你拍\n  钉住  \n# 又一条\n"
-    assert slopguard.parse_lines(text) == ["等你拍", "钉住"]
+def test_as_str_list_skips_empty():
+    assert slopguard.as_str_list(["等你拍", "  ", None, "钉住"]) == ["等你拍", "钉住"]
+
+
+def test_as_calque_map_strips():
+    assert slopguard.as_calque_map({" 闸门 ": " gate ", None: "x", "a": None}) == {
+        "闸门": "gate"
+    }
+
+
+def test_load_yaml_bad_file(tmp_path):
+    p = tmp_path / "missing.yaml"
+    assert slopguard.load_yaml(p) == {}
+    p.write_text("- just a list\n", encoding="utf-8")
+    assert slopguard.load_yaml(p) == {}
 
 
 # ---- find_matches ----
@@ -58,7 +70,7 @@ def test_find_matches_no_hit():
 # ---- build_reason ----
 
 def test_build_reason_fills_placeholder():
-    assert slopguard.build_reason(["说人话:{words}"], ["甲", "乙"]) == "说人话:甲、乙"
+    assert slopguard.build_reason(["说人话:{words}"], ["甲", "乙"]) == "说人话:甲, 乙"
 
 
 def test_build_reason_empty_templates_has_fallback():
@@ -127,5 +139,150 @@ def test_main_creates_user_files(tmp_path, monkeypatch):
         "last_assistant_message": "正常的回答",
         "stop_hook_active": False,
     })
-    assert (udir / "patterns.txt").exists()
-    assert (udir / "templates.txt").exists()
+    assert (udir / "patterns.yaml").exists()
+    assert (udir / "templates.yaml").exists()
+    assert not (udir / "patterns.txt").exists()
+    assert not (udir / "templates.txt").exists()
+
+
+# ---- load_patterns / load_calques 分流 ----
+
+def test_load_splits_calques_from_patterns(tmp_path, monkeypatch):
+    monkeypatch.setenv("SLOPGUARD_USER_DIR", str(tmp_path / "userconf"))
+    patterns = slopguard.load_patterns()
+    calques = slopguard.load_calques()
+    assert "稳稳托住" in patterns
+    assert ("闸门", "gate") in calques
+    templates = slopguard.load_templates()
+    calque_templates = slopguard.load_calque_templates()
+    assert all("{words}" in t for t in templates)
+    assert all("{words_cn}" in t or "{word_en}" in t for t in calque_templates)
+    assert templates
+    assert calque_templates
+
+
+# ---- find_calque_matches ----
+
+_ARM = r"(?<!手)(?<!机械)臂"
+_CALQUES = [("闸门", "gate"), (_ARM, "arm")]
+
+
+def test_calque_zhamen_hits():
+    assert slopguard.find_calque_matches("打开这个闸门再继续", _CALQUES) == [
+        ("闸门", "gate")
+    ]
+
+
+def test_calque_arm_hits():
+    assert slopguard.find_calque_matches("把这段接到执行臂上", _CALQUES) == [
+        ("臂", "arm")
+    ]
+    assert slopguard.find_calque_matches("the 臂 is ready", _CALQUES) == [
+        ("臂", "arm")
+    ]
+    # 摇臂不在白名单里, 该命中
+    assert slopguard.find_calque_matches("摇臂松了", _CALQUES) == [
+        ("臂", "arm")
+    ]
+
+
+def test_calque_arm_excludes_shoubi_and_jixiebi():
+    # 只放过 手臂 / 机械臂
+    assert slopguard.find_calque_matches("他抬起右手臂", _CALQUES) == []
+    assert slopguard.find_calque_matches("机械臂已经就位", _CALQUES) == []
+
+
+def test_calque_skips_bad_regex():
+    assert slopguard.find_calque_matches("闸门", [("(", "x"), ("闸门", "gate")]) == [
+        ("闸门", "gate")
+    ]
+
+
+# ---- build_calque_reason ----
+
+def test_build_calque_reason_fills_placeholders():
+    got = slopguard.build_calque_reason(
+        ['cn={words_cn} en={word_en}'],
+        [("闸门", "gate"), ("执行臂", "arm")],
+    )
+    assert got == "cn=闸门, 执行臂 en=gate, arm"
+
+
+def test_build_calque_reason_empty_templates_has_fallback():
+    got = slopguard.build_calque_reason([], [("闸门", "gate")])
+    assert "闸门" in got
+    assert "gate" in got
+
+
+# ---- main: 翻译腔 ----
+
+def test_main_blocks_on_calque(tmp_path, monkeypatch):
+    monkeypatch.setenv("SLOPGUARD_USER_DIR", str(tmp_path / "userconf"))
+    code, out, err = _run_main(monkeypatch, {
+        "last_assistant_message": "先把闸门打开",
+        "stop_hook_active": False,
+    })
+    assert code == 0
+    result = json.loads(out)
+    assert result["decision"] == "block"
+    assert "闸门" in result["reason"]
+    assert "gate" in result["reason"]
+    assert "闸门" in result["systemMessage"]
+    assert "gate" in result["systemMessage"]
+
+
+def test_main_passes_shoubi_and_jixiebi(tmp_path, monkeypatch):
+    monkeypatch.setenv("SLOPGUARD_USER_DIR", str(tmp_path / "userconf"))
+    code, out, err = _run_main(monkeypatch, {
+        "last_assistant_message": "机械臂已经就位, 右手臂也没问题.",
+        "stop_hook_active": False,
+    })
+    assert code == 0
+    assert out.strip() == ""
+
+
+def test_main_blocks_other_arm(tmp_path, monkeypatch):
+    monkeypatch.setenv("SLOPGUARD_USER_DIR", str(tmp_path / "userconf"))
+    code, out, err = _run_main(monkeypatch, {
+        "last_assistant_message": "把这段接到执行臂上.",
+        "stop_hook_active": False,
+    })
+    assert code == 0
+    result = json.loads(out)
+    assert result["decision"] == "block"
+    assert "臂" in result["reason"]
+    assert "arm" in result["reason"]
+
+
+def test_main_user_calque_in_patterns(tmp_path, monkeypatch):
+    # 用户把翻译腔写进同一个 patterns.yaml 的 calque:
+    udir = tmp_path / "userconf"
+    udir.mkdir()
+    (udir / "patterns.yaml").write_text(
+        "slop: []\ncalque:\n  令牌: token\n", encoding="utf-8"
+    )
+    (udir / "templates.yaml").write_text("slop: []\ncalque: []\n", encoding="utf-8")
+    monkeypatch.setenv("SLOPGUARD_USER_DIR", str(udir))
+    code, out, err = _run_main(monkeypatch, {
+        "last_assistant_message": "把这个令牌传进去",
+        "stop_hook_active": False,
+    })
+    assert code == 0
+    result = json.loads(out)
+    assert result["decision"] == "block"
+    assert "令牌" in result["reason"]
+    assert "token" in result["reason"]
+
+
+def test_main_both_calque_and_slop(tmp_path, monkeypatch):
+    monkeypatch.setenv("SLOPGUARD_USER_DIR", str(tmp_path / "userconf"))
+    code, out, err = _run_main(monkeypatch, {
+        "last_assistant_message": "这个闸门稳稳托住了全场",
+        "stop_hook_active": False,
+    })
+    assert code == 0
+    result = json.loads(out)
+    assert result["decision"] == "block"
+    assert "闸门" in result["reason"]
+    assert "gate" in result["reason"]
+    assert "稳稳托住" in result["reason"]
